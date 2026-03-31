@@ -378,19 +378,45 @@ async def revoke(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Failed to revoke rank.")
 
 # ADMINS LIST
-
 async def admins(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not await allow_in_dm(update):
         return
 
+    chat_id = update.effective_chat.id
+
+    admins = await context.bot.get_chat_administrators(chat_id)
+
+    text = "<b>Group Administrators</b>\n\n"
+
+    for admin in admins:
+        user = admin.user
+
+        name = f"@{user.username}" if user.username else user.first_name
+        mention = mention_html(user.id, name)
+
+        status = "👑 Owner" if admin.status == "creator" else "🛡 Admin"
+
+        text += f"{status} → {mention}\n"
+
+    await update.message.reply_text(
+        text,
+        parse_mode="HTML"
+    )
+
+#RANKS
+async def ranks(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    if not await allow_in_dm(update):
+        return
+
     if not ADMIN_RANKS:
-        await update.message.reply_text("No admins recorded.")
+        await update.message.reply_text("No ranks assigned.")
         return
 
     chat_id = update.effective_chat.id
 
-    ranks = {
+    grouped = {
         "owner": [],
         "dev": [],
         "sudo": [],
@@ -406,35 +432,28 @@ async def admins(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 continue
 
             user = member.user
-
-            # clickable mention
             name = f"@{user.username}" if user.username else user.first_name
             mention = mention_html(user.id, name)
 
         except:
             mention = f"<code>{user_id}</code>"
 
-        if rank in ranks:
-            ranks[rank].append(mention)
+        if rank in grouped:
+            grouped[rank].append(mention)
 
-    # 🔥 NEW UI
-    text = "👑 <b>Admin Hierarchy</b>\n\n"
+    text = "⚡ <b>Bot Rank System</b>\n\n"
 
-    if ranks["owner"]:
-        text += "👑 <b>Owner</b>\n"
-        text += "\n".join(ranks["owner"]) + "\n\n"
+    if grouped["owner"]:
+        text += "👑 Owner\n" + "\n".join(grouped["owner"]) + "\n\n"
 
-    if ranks["dev"]:
-        text += "⚡ <b>Developers</b>\n"
-        text += "\n".join(ranks["dev"]) + "\n\n"
+    if grouped["dev"]:
+        text += "⚡ Dev\n" + "\n".join(grouped["dev"]) + "\n\n"
 
-    if ranks["sudo"]:
-        text += "🛡 <b>Sudo Users</b>\n"
-        text += "\n".join(ranks["sudo"]) + "\n\n"
+    if grouped["sudo"]:
+        text += "🛡 Sudo\n" + "\n".join(grouped["sudo"]) + "\n\n"
 
-    if ranks["support"]:
-        text += "🔰 <b>Support Staff</b>\n"
-        text += "\n".join(ranks["support"]) + "\n\n"
+    if grouped["support"]:
+        text += "🔰 Support\n" + "\n".join(grouped["support"]) + "\n\n"
 
     await update.message.reply_text(
         text.strip(),
@@ -651,3 +670,4 @@ def register_moderation(app):
     app.add_handler(CommandHandler("demote", demote), group=0)
     app.add_handler(CommandHandler("rules", rules))
     app.add_handler(CommandHandler("setrules", setrules))
+    app.add_handler(CommandHandler("ranks", ranks), group=0)
