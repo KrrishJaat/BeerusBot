@@ -1,13 +1,18 @@
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import CommandHandler, ContextTypes, CallbackQueryHandler
 
-from modules.moderation import is_admin
+from modules.moderation import is_admin, ADMIN_RANKS, RANK_LEVEL
 from utils import load_json, save_json
 from modules.adminlogs import send_log
 
 
 warn_file = "data/warns.json"
 warns_db = load_json(warn_file)
+
+
+def actor_rank(user_id):
+    data = ADMIN_RANKS.get(str(user_id))
+    return data if isinstance(data, str) else (data.get("rank") if isinstance(data, dict) else None)
 
 
 def save_warns():
@@ -17,9 +22,16 @@ def save_warns():
 # WARN
 async def warn(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
-    if not await is_admin(update, context):
-        await update.message.reply_text("Bitch You're Not Worthy.")
+    
+    rank = actor_rank(update.effective_user.id)
+    chat_id_int = update.effective_chat.id
+    member = await context.bot.get_chat_member(chat_id_int, update.effective_user.id)
+
+    # allow if ranked OR admin
+    if rank not in ["owner","dev","sudo","support"] and member.status not in ["administrator","creator"]:
+        await update.message.reply_text("You're not authorized to use this command.")
         return
+
 
     if not update.message.reply_to_message:
         await update.message.reply_text("Reply to a user to warn.")
@@ -32,6 +44,31 @@ async def warn(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reason = " ".join(context.args)
 
     user = update.message.reply_to_message.from_user
+
+    target_rank = actor_rank(user.id)
+
+    if user.id == context.bot.id:
+        await update.message.reply_text("You Wanna Some Hakai?")
+        return
+
+    # owner protection (owner id may not be here; skip if not available)
+    try:
+        from config import OWNER_ID
+        if user.id == OWNER_ID:
+            await update.message.reply_text("You can't warn the owner.")
+            return
+    except:
+        pass
+
+    # prevent admin warning ranked users
+    actor_r = actor_rank(update.effective_user.id)
+    if target_rank:
+        actor_level = RANK_LEVEL.get(actor_r, 0)
+        target_level = RANK_LEVEL.get(target_rank, 0)
+        if target_level >= actor_level:
+            await update.message.reply_text("You can't warn someone with equal or higher rank.")
+            return
+
     chat_id = str(update.effective_chat.id)
 
     # Check if user still in group
@@ -121,9 +158,13 @@ async def unwarn_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     admin = update.effective_user
     admin_name = admin.first_name
 
-    if not await is_admin(update, context):
-        await query.answer("Admins only.", show_alert=True)
+    
+    rank = actor_rank(update.effective_user.id)
+    member = await context.bot.get_chat_member(query.message.chat.id, update.effective_user.id)
+    if rank not in ["owner","dev","sudo","support"] and member.status not in ["administrator","creator"]:
+        await query.answer("Not authorized.", show_alert=True)
         return
+
 
     data = query.data.split("_")
     user_id = data[1]
@@ -156,9 +197,16 @@ async def unwarn_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # DELETE WARN /DWARN
 async def dwarn(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
-    if not await is_admin(update, context):
-        await update.message.reply_text("Bitch You're Not Worthy.")
+    
+    rank = actor_rank(update.effective_user.id)
+    chat_id_int = update.effective_chat.id
+    member = await context.bot.get_chat_member(chat_id_int, update.effective_user.id)
+
+    # allow if ranked OR admin
+    if rank not in ["owner","dev","sudo","support"] and member.status not in ["administrator","creator"]:
+        await update.message.reply_text("You're not authorized to use this command.")
         return
+
 
     if not update.message.reply_to_message:
         await update.message.reply_text("Reply to a message to warn.")
@@ -179,15 +227,47 @@ async def dwarn(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # UNWARN COMMAND
 async def unwarn(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
-    if not await is_admin(update, context):
-        await update.message.reply_text("Bitch You're Not Worthy.")
+    
+    rank = actor_rank(update.effective_user.id)
+    chat_id_int = update.effective_chat.id
+    member = await context.bot.get_chat_member(chat_id_int, update.effective_user.id)
+
+    # allow if ranked OR admin
+    if rank not in ["owner","dev","sudo","support"] and member.status not in ["administrator","creator"]:
+        await update.message.reply_text("You're not authorized to use this command.")
         return
+
 
     if not update.message.reply_to_message:
         await update.message.reply_text("Reply to a user.")
         return
 
     user = update.message.reply_to_message.from_user
+
+    target_rank = actor_rank(user.id)
+
+    if user.id == context.bot.id:
+        await update.message.reply_text("You Wanna Some Hakai?")
+        return
+
+    # owner protection (owner id may not be here; skip if not available)
+    try:
+        from config import OWNER_ID
+        if user.id == OWNER_ID:
+            await update.message.reply_text("You can't warn the owner.")
+            return
+    except:
+        pass
+
+    # prevent admin warning ranked users
+    actor_r = actor_rank(update.effective_user.id)
+    if target_rank:
+        actor_level = RANK_LEVEL.get(actor_r, 0)
+        target_level = RANK_LEVEL.get(target_rank, 0)
+        if target_level >= actor_level:
+            await update.message.reply_text("You can't warn someone with equal or higher rank.")
+            return
+
     chat_id = str(update.effective_chat.id)
 
     if chat_id in warns_db and str(user.id) in warns_db[chat_id]:
@@ -217,14 +297,47 @@ async def unwarn(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # RESET WARN
 async def resetwarn(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
-    if not await is_admin(update, context):
+    
+    rank = actor_rank(update.effective_user.id)
+    chat_id_int = update.effective_chat.id
+    member = await context.bot.get_chat_member(chat_id_int, update.effective_user.id)
+
+    # allow if ranked OR admin
+    if rank not in ["owner","dev","sudo","support"] and member.status not in ["administrator","creator"]:
+        await update.message.reply_text("You're not authorized to use this command.")
         return
+
 
     chat_id = str(update.effective_chat.id)
 
     if update.message.reply_to_message:
 
         user = update.message.reply_to_message.from_user
+
+    target_rank = actor_rank(user.id)
+
+    if user.id == context.bot.id:
+        await update.message.reply_text("You Wanna Some Hakai?")
+        return
+
+    # owner protection (owner id may not be here; skip if not available)
+    try:
+        from config import OWNER_ID
+        if user.id == OWNER_ID:
+            await update.message.reply_text("You can't warn the owner.")
+            return
+    except:
+        pass
+
+    # prevent admin warning ranked users
+    actor_r = actor_rank(update.effective_user.id)
+    if target_rank:
+        actor_level = RANK_LEVEL.get(actor_r, 0)
+        target_level = RANK_LEVEL.get(target_rank, 0)
+        if target_level >= actor_level:
+            await update.message.reply_text("You can't warn someone with equal or higher rank.")
+            return
+
 
         if chat_id in warns_db and str(user.id) in warns_db[chat_id]:
 
@@ -241,6 +354,31 @@ async def warns(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if update.message.reply_to_message:
         user = update.message.reply_to_message.from_user
+
+    target_rank = actor_rank(user.id)
+
+    if user.id == context.bot.id:
+        await update.message.reply_text("You Wanna Some Hakai?")
+        return
+
+    # owner protection (owner id may not be here; skip if not available)
+    try:
+        from config import OWNER_ID
+        if user.id == OWNER_ID:
+            await update.message.reply_text("You can't warn the owner.")
+            return
+    except:
+        pass
+
+    # prevent admin warning ranked users
+    actor_r = actor_rank(update.effective_user.id)
+    if target_rank:
+        actor_level = RANK_LEVEL.get(actor_r, 0)
+        target_level = RANK_LEVEL.get(target_rank, 0)
+        if target_level >= actor_level:
+            await update.message.reply_text("You can't warn someone with equal or higher rank.")
+            return
+
     else:
         user = update.effective_user
 

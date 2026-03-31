@@ -7,6 +7,7 @@ from telegram import Update, ChatPermissions
 from telegram.ext import CommandHandler, ContextTypes
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from modules.filters import allow_in_dm
+from telegram.helpers import mention_html
 from modules.adminlogs import send_log
 
 from config import OWNER_ID
@@ -131,9 +132,17 @@ async def lock_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await allow_in_dm(update):
         return
 
-    if not await is_admin(update, context):
-        await update.message.reply_text("You're not worthy.")
+    
+    rank = ADMIN_RANKS.get(str(update.effective_user.id))
+    chat_id = update.effective_chat.id
+
+    member = await context.bot.get_chat_member(chat_id, update.effective_user.id)
+
+    # allow if ranked OR admin
+    if rank not in ["owner", "dev", "sudo", "support"] and member.status not in ["administrator", "creator"]:
+        await update.message.reply_text("You're not authorized to use this command.")
         return
+
 
     chat_id = update.effective_chat.id
 
@@ -153,9 +162,17 @@ async def unlock_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await allow_in_dm(update):
         return
 
-    if not await is_admin(update, context):
-        await update.message.reply_text("You're not worthy.")
+    
+    rank = ADMIN_RANKS.get(str(update.effective_user.id))
+    chat_id = update.effective_chat.id
+
+    member = await context.bot.get_chat_member(chat_id, update.effective_user.id)
+
+    # allow if ranked OR admin
+    if rank not in ["owner", "dev", "sudo", "support"] and member.status not in ["administrator", "creator"]:
+        await update.message.reply_text("You're not authorized to use this command.")
         return
+
 
     chat_id = update.effective_chat.id
 
@@ -180,9 +197,17 @@ async def purge(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await allow_in_dm(update):
         return
 
-    if not await is_admin(update, context):
-        await update.message.reply_text("You're not worthy.")
+    
+    rank = ADMIN_RANKS.get(str(update.effective_user.id))
+    chat_id = update.effective_chat.id
+
+    member = await context.bot.get_chat_member(chat_id, update.effective_user.id)
+
+    # allow if ranked OR admin
+    if rank not in ["owner", "dev", "sudo", "support"] and member.status not in ["administrator", "creator"]:
+        await update.message.reply_text("You're not authorized to use this command.")
         return
+
 
     if not update.message.reply_to_message:
         await update.message.reply_text("Reply to a message to purge.")
@@ -210,23 +235,23 @@ async def grant(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if actor_rank not in ["owner", "dev"]:
-        await update.message.reply_text("Only Owner or Dev can grant ranks.")
+        await update.message.reply_text("bitch you're not worthy")
         return
 
     if not update.message.reply_to_message:
         await update.message.reply_text(
-            "Reply to a user with:\n/grant <rank> <title>"
+            "Reply to a user with:/grant <rank>"
         )
         return
 
-    if len(context.args) < 2:
+    if len(context.args) < 1:
         await update.message.reply_text(
-            "Usage: /grant <rank> <title>"
+            "Usage: /grant <rank>"
         )
         return
 
     rank = context.args[0].lower()
-    tag = context.args[1]
+    tag = rank.upper()
 
     if rank not in RANK_LEVEL:
         await update.message.reply_text("Invalid rank.")
@@ -235,6 +260,19 @@ async def grant(update: Update, context: ContextTypes.DEFAULT_TYPE):
     target = update.message.reply_to_message.from_user
     chat_id = update.effective_chat.id
 
+    # OWNER PROTECTION
+    if target.id == OWNER_ID:
+        await update.message.reply_text("Using Command On Owner🤡")
+        return
+
+    # already rank holder
+    target_rank = ADMIN_RANKS.get(str(target.id))
+    if target_rank:
+        await update.message.reply_text(
+            f"This user is already a {target_rank.upper()}."
+        )
+        return
+
     # dev restrictions
     if actor_rank == "dev" and rank in ["owner", "dev"]:
         await update.message.reply_text("Dev cannot grant owner/dev rank.")
@@ -242,37 +280,40 @@ async def grant(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     permissions = get_permissions(rank)
 
+    member = await context.bot.get_chat_member(chat_id, target.id)
+
+    # ALWAYS assign rank (this is your core system)
+    ADMIN_RANKS[str(target.id)] = rank
+    save_admin_ranks()
+
+    # If NOT admin → promote
+    if member.status not in ["administrator", "creator"]:
+        try:
+            await context.bot.promote_chat_member(
+                chat_id,
+                target.id,
+                **permissions
+            )
+        except Exception as e:
+            print("Promote failed:", e)
+
+    # Try setting title (optional, never fail)
     try:
-
-        await context.bot.promote_chat_member(
-            chat_id,
-            target.id,
-            **permissions
-        )
-
         await context.bot.set_chat_administrator_custom_title(
             chat_id,
             target.id,
             tag
         )
-
-        ADMIN_RANKS[str(target.id)] = rank
-        save_admin_ranks()
-
-        await update.message.reply_text(
-            f"{target.first_name} granted rank as {rank.upper()}."
-        )
-
     except Exception as e:
-        print(e)
-        await update.message.reply_text("Failed to grant rank.")
+        print("Title failed:", e)
 
-        await send_log(
-    context,
-    update.effective_chat.id,
-    f"⭐ Admin promoted\nUser: {target.first_name}\nAdmin: {update.effective_user.first_name}"
-)
+    name = f"@{target.username}" if target.username else target.first_name
+    user_mention = mention_html(target.id, name)
 
+    await update.message.reply_text(
+        f"⚡ {user_mention} has been granted <b>{rank.upper()}</b> rank.",
+        parse_mode="HTML"
+        )
 
 # REVOKE RANK
 async def revoke(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -284,7 +325,7 @@ async def revoke(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if actor_rank not in ["owner", "dev"]:
-        await update.message.reply_text("Only Owner or Dev can revoke ranks.")
+        await update.message.reply_text("bitch you're not worthy")
         return
 
     if not update.message.reply_to_message:
@@ -294,10 +335,15 @@ async def revoke(update: Update, context: ContextTypes.DEFAULT_TYPE):
     target = update.message.reply_to_message.from_user
     chat_id = update.effective_chat.id
 
+    # OWNER PROTECTION
+    if target.id == OWNER_ID:
+        await update.message.reply_text("abe chutiye owner ko revoke karega? 🤡")
+        return
+
     target_rank = ADMIN_RANKS.get(str(target.id))
 
     if not target_rank:
-        await update.message.reply_text("This user has no bot rank.")
+        await update.message.reply_text("This user has no rank to revoke.")
         return
 
     if actor_rank == "dev" and target_rank in ["owner", "dev"]:
@@ -327,17 +373,12 @@ async def revoke(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"{target.first_name}'s rank has been revoked."
         )
 
-    except:
+    except Exception as e:
+        print(e)
         await update.message.reply_text("Failed to revoke rank.")
 
-        await send_log(
-    context,
-    update.effective_chat.id,
-    f"⬇ Admin demoted\nUser: {target.first_name}\nAdmin: {update.effective_user.first_name}"
-)
-
-
 # ADMINS LIST
+
 async def admins(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not await allow_in_dm(update):
@@ -365,33 +406,40 @@ async def admins(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 continue
 
             user = member.user
+
+            # clickable mention
             name = f"@{user.username}" if user.username else user.first_name
+            mention = mention_html(user.id, name)
 
         except:
-            name = f"User({user_id})"
+            mention = f"<code>{user_id}</code>"
 
         if rank in ranks:
-            ranks[rank].append(name)
+            ranks[rank].append(mention)
 
-    text = ""
+    # 🔥 NEW UI
+    text = "👑 <b>Admin Hierarchy</b>\n\n"
 
     if ranks["owner"]:
-        text += "👑 Owner\n"
+        text += "👑 <b>Owner</b>\n"
         text += "\n".join(ranks["owner"]) + "\n\n"
 
     if ranks["dev"]:
-        text += "⚡ Dev\n"
+        text += "⚡ <b>Developers</b>\n"
         text += "\n".join(ranks["dev"]) + "\n\n"
 
     if ranks["sudo"]:
-        text += "🛡 Sudo\n"
+        text += "🛡 <b>Sudo Users</b>\n"
         text += "\n".join(ranks["sudo"]) + "\n\n"
 
     if ranks["support"]:
-        text += "🔰 Support\n"
+        text += "🔰 <b>Support Staff</b>\n"
         text += "\n".join(ranks["support"]) + "\n\n"
 
-    await update.message.reply_text(text.strip())
+    await update.message.reply_text(
+        text.strip(),
+        parse_mode="HTML"
+    )
 
 # PROMOTE (group admin)
 async def promote(update: Update, context: ContextTypes.DEFAULT_TYPE):

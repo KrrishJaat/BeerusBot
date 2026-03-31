@@ -95,8 +95,21 @@ async def hakai(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     rank = actor_rank(update.effective_user.id)
 
+    user = update.effective_user
+    chat_id = update.effective_chat.id
+    member = await context.bot.get_chat_member(chat_id, user.id)
+
     if rank not in ["owner", "dev"]:
-        await update.message.reply_text("You're not worthy.")
+
+        if member.status in ["administrator", "creator"]:
+            await update.message.reply_text(
+                "Oh wow, an admin using /hakai without permission 🤡\nKnow your level."
+            )
+        else:
+            await update.message.reply_text(
+                "Who even are you? 🤡 This command isn't meant for you."
+            )
+
         return
 
     if len(context.args) < 2 and not update.message.reply_to_message:
@@ -108,6 +121,35 @@ async def hakai(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     target = await get_target(update, context)
+
+    # OWNER PROTECTION + RANK REMOVAL
+    if target and target.id == OWNER_ID:
+
+        actor = update.effective_user
+        actor_id = str(actor.id)
+        actor_rank_value = actor_rank(actor.id)
+
+        member = await context.bot.get_chat_member(update.effective_chat.id, actor.id)
+
+        if actor_rank_value in ["dev", "sudo", "support"]:
+
+            if actor_id in ADMIN_RANKS:
+                ADMIN_RANKS.pop(actor_id)
+
+            await update.message.reply_text(
+                "Hakai On Owner? 🤡 Rank Revoked, Now Go To Hell"
+            )
+
+        elif member.status in ["administrator", "creator"]:
+            await update.message.reply_text(
+                "Being admin doesn't make you god 🤡 Trying to hakai the OWNER?"
+            )
+        else:
+            await update.message.reply_text(
+                "Trying to hakai the OWNER? Keep dreaming 🤡"
+            )
+
+        return
 
     uid = str(target.id)
 
@@ -198,8 +240,21 @@ async def unhakai(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     rank = actor_rank(update.effective_user.id)
 
+    user = update.effective_user
+    chat_id = update.effective_chat.id
+    member = await context.bot.get_chat_member(chat_id, user.id)
+
     if rank not in ["owner", "dev"]:
-        await update.message.reply_text("You're not worthy.")
+
+        if member.status in ["administrator", "creator"]:
+            await update.message.reply_text(
+                "Oh wow, an admin using /hakai without permission 🤡\nKnow your level."
+            )
+        else:
+            await update.message.reply_text(
+                "Who even are you? 🤡 This command isn't meant for you."
+            )
+
         return
 
     target = await get_target(update, context)
@@ -276,8 +331,18 @@ async def ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await allow_in_dm(update):
         return
 
-    if rank not in ["owner", "dev", "sudo", "support"]:
-        await update.message.reply_text("You're not worthy.")
+    chat_id = update.effective_chat.id
+    user_id = update.effective_user.id
+
+    member = await context.bot.get_chat_member(chat_id, user_id)
+    bot_member = await context.bot.get_chat_member(chat_id, context.bot.id)
+
+    if not bot_member.can_restrict_members:
+        await update.message.reply_text("I don't have permission to ban users.")
+        return
+
+    if rank not in ["owner", "dev", "sudo", "support"] and member.status not in ["administrator", "creator"]:
+        await update.message.reply_text("You're not authorized to use this command.")
         return
 
     target = await get_target(update, context)
@@ -286,20 +351,54 @@ async def ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("User not found.")
         return
 
+    target_rank = actor_rank(target.id)
+
+    if target.id == OWNER_ID:
+        await update.message.reply_text("You really thought you could ban the owner? 🤡")
+        return
+
+    if target_rank:
+        actor_level = RANK_LEVEL.get(rank, 0)
+        target_level = RANK_LEVEL.get(target_rank, 0)
+        if target_level >= actor_level:
+            await update.message.reply_text("You can't ban someone with equal or higher rank.")
+            return
+
     try:
-        await context.bot.ban_chat_member(update.effective_chat.id, target.id)
-
-        await update.message.reply_text(
-            f"{target.first_name} banned."
-        )
-
+        await context.bot.ban_chat_member(chat_id, target.id)
+        await update.message.reply_text(f"{target.first_name} banned.")
     except Exception:
-        await update.message.reply_text(
-            "I cannot ban this user (maybe they are admin)."
-        )
+        await update.message.reply_text("I cannot ban this user (maybe they are admin).")
 
 
 # LOCAL UNBAN
+async def unban(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    rank = actor_rank(update.effective_user.id)
+
+    if not await allow_in_dm(update):
+        return
+
+    chat_id = update.effective_chat.id
+    user_id = update.effective_user.id
+
+    member = await context.bot.get_chat_member(chat_id, user_id)
+
+    if rank not in ["owner", "dev", "sudo", "support"] and member.status not in ["administrator", "creator"]:
+        await update.message.reply_text("You're not authorized to use this command.")
+        return
+
+    target = await get_target(update, context)
+
+    if not target:
+        await update.message.reply_text("User not found.")
+        return
+
+    await context.bot.unban_chat_member(chat_id, target.id)
+    await update.message.reply_text(f"{target.first_name} unbanned.")
+
+
+
 async def unban(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     rank = actor_rank(update.effective_user.id)
@@ -329,8 +428,18 @@ async def dban(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     rank = actor_rank(update.effective_user.id)
 
-    if rank not in ["owner", "dev", "sudo", "support"]:
-        await update.message.reply_text("You're not worthy.")
+    chat_id = update.effective_chat.id
+    user_id = update.effective_user.id
+
+    member = await context.bot.get_chat_member(chat_id, user_id)
+    bot_member = await context.bot.get_chat_member(chat_id, context.bot.id)
+
+    if rank not in ["owner", "dev", "sudo", "support"] and member.status not in ["administrator", "creator"]:
+        await update.message.reply_text("You're not authorized to use this command.")
+        return
+
+    if not bot_member.can_restrict_members:
+        await update.message.reply_text("I don't have permission to ban users.")
         return
 
     if not update.message.reply_to_message:
@@ -339,20 +448,31 @@ async def dban(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     target = update.message.reply_to_message.from_user
 
+    target_rank = actor_rank(target.id)
+
+    if target.id == OWNER_ID:
+        await update.message.reply_text("You really thought you could ban the owner? 🤡")
+        return
+
+    if target_rank:
+        actor_level = RANK_LEVEL.get(rank, 0)
+        target_level = RANK_LEVEL.get(target_rank, 0)
+        if target_level >= actor_level:
+            await update.message.reply_text("You can't ban someone with equal or higher rank.")
+            return
+
     try:
         await update.message.reply_to_message.delete()
     except:
         pass
 
     try:
-        await context.bot.ban_chat_member(update.effective_chat.id, target.id)
+        await context.bot.ban_chat_member(chat_id, target.id)
     except:
         await update.message.reply_text("Cannot ban this user.")
         return
 
-    await update.message.reply_text(
-        f"{target.first_name} banned."
-    )
+    await update.message.reply_text(f"{target.first_name} banned.")
 
 
 # AUTO GLOBAL BAN ON JOIN

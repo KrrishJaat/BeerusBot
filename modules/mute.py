@@ -6,7 +6,7 @@ from telegram import Update, ChatPermissions
 from telegram.ext import CommandHandler, ContextTypes
 from modules.adminlogs import send_log
 
-from modules.moderation import ADMIN_RANKS
+from modules.moderation import ADMIN_RANKS, RANK_LEVEL
 
 
 MUTE_FILE = "data/mutes.json"
@@ -46,17 +46,42 @@ def parse_time(text):
 # MUTE
 async def mute(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
+    
     rank = actor_rank(update.effective_user.id)
+    chat_id_int = update.effective_chat.id
 
-    if rank not in ["owner", "dev", "sudo", "support"]:
-        await update.message.reply_text("You're not worthy.")
+    member = await context.bot.get_chat_member(chat_id_int, update.effective_user.id)
+    bot_member = await context.bot.get_chat_member(chat_id_int, context.bot.id)
+
+    if not bot_member.can_restrict_members:
+        await update.message.reply_text("I don't have permission to mute users.")
+        return
+
+    if rank not in ["owner", "dev", "sudo", "support"] and member.status not in ["administrator", "creator"]:
+        await update.message.reply_text("You're not authorized to use this command.")
         return
 
     if not update.message.reply_to_message:
         await update.message.reply_text("Reply to a user to mute.")
         return
 
+
+    if not update.message.reply_to_message:
+        await update.message.reply_text("Reply to a user to mute.")
+        return
+
     target = update.message.reply_to_message.from_user
+
+    target_rank = actor_rank(target.id)
+
+    if target_rank:
+        actor_level = RANK_LEVEL.get(rank, 0)
+        target_level = RANK_LEVEL.get(target_rank, 0)
+
+        if target_level >= actor_level:
+            await update.message.reply_text("You can't mute someone with equal or higher rank.")
+            return
+
     chat_id = str(update.effective_chat.id)
 
     await context.bot.restrict_chat_member(
@@ -103,6 +128,17 @@ async def tmute(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     target = update.message.reply_to_message.from_user
+
+    target_rank = actor_rank(target.id)
+
+    if target_rank:
+        actor_level = RANK_LEVEL.get(rank, 0)
+        target_level = RANK_LEVEL.get(target_rank, 0)
+
+        if target_level >= actor_level:
+            await update.message.reply_text("You can't mute someone with equal or higher rank.")
+            return
+
     chat_id = str(update.effective_chat.id)
 
     await context.bot.restrict_chat_member(
@@ -143,6 +179,17 @@ async def unmute(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     target = update.message.reply_to_message.from_user
+
+    target_rank = actor_rank(target.id)
+
+    if target_rank:
+        actor_level = RANK_LEVEL.get(rank, 0)
+        target_level = RANK_LEVEL.get(target_rank, 0)
+
+        if target_level >= actor_level:
+            await update.message.reply_text("You can't mute someone with equal or higher rank.")
+            return
+
     chat_id = str(update.effective_chat.id)
 
     await context.bot.restrict_chat_member(
