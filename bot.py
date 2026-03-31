@@ -1,4 +1,5 @@
 from telegram.ext import ApplicationBuilder
+from telegram import Update
 
 from config import BOT_TOKEN
 
@@ -53,6 +54,6 @@ async def error_handler(update, context):
 
 app.add_error_handler(error_handler)
 
-print("Bot running...")
+print("Beerus Is Ready For Destruction...")
 
-app.run_polling()
+app.run_polling(allowed_updates=Update.ALL_TYPES)

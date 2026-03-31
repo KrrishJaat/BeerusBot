@@ -1,6 +1,7 @@
 import json
 import os
 import asyncio
+import time
 
 from telegram import Update, ChatPermissions
 from telegram.ext import CommandHandler, ContextTypes
@@ -111,7 +112,17 @@ def get_permissions(rank):
 
 # PING
 async def ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Pong 🏓")
+    start = time.time()
+
+    msg = await update.message.reply_text("🏓 Checking...")
+
+    latency = (time.time() - start) * 1000
+
+    await msg.edit_text(
+        f"🏓 <b>Pong!</b>\n"
+        f"⚡ <b>Latency:</b> {latency:.2f} ms",
+        parse_mode="HTML"
+    )
 
 
 # CHAT LOCK

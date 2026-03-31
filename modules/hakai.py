@@ -2,6 +2,7 @@ import json
 import os
 
 from telegram import Update
+from telegram.helpers import mention_html
 from telegram.ext import CommandHandler, ContextTypes, MessageHandler, filters
 from modules.filters import allow_in_dm
 from modules.adminlogs import send_log
@@ -12,7 +13,13 @@ from modules.groups import GROUPS
 
 
 HAKAI_FILE = "data/hakai_bans.json"
+USER_FILE = "data/user_cache.json"
 
+if os.path.exists(USER_FILE):
+    with open(USER_FILE) as f:
+        USER_DB = json.load(f)
+else:
+    USER_DB = {}
 
 # LOAD DATA
 if os.path.exists(HAKAI_FILE):
@@ -22,7 +29,6 @@ if os.path.exists(HAKAI_FILE):
         if isinstance(data, dict):
             HAKAI_BANS = data
         elif isinstance(data, list):
-            # migrate old format
             HAKAI_BANS = {str(uid): "No reason recorded" for uid in data}
         else:
             HAKAI_BANS = {}
@@ -35,20 +41,46 @@ def save_hakai():
         json.dump(HAKAI_BANS, f, indent=4)
 
 
+def save_users():
+    with open(USER_FILE, "w") as f:
+        json.dump(USER_DB, f, indent=4)
+
+
 async def get_target(update, context):
 
     if update.message.reply_to_message:
         return update.message.reply_to_message.from_user
 
     if context.args:
-        username = context.args[0].replace("@", "")
-        chat = update.effective_chat
+        arg = context.args[0]
 
-        try:
-            member = await context.bot.get_chat_member(chat.id, username)
-            return member.user
-        except:
-            return None
+        if arg.isdigit():
+            class FakeUser:
+                def __init__(self, uid):
+                    self.id = int(uid)
+                    self.first_name = str(uid)
+            return FakeUser(arg)
+
+        if arg.startswith("@"):
+            username = arg[1:].lower()
+
+            if username in USER_DB:
+                uid = USER_DB[username]
+
+                class FakeUser:
+                    def __init__(self, uid, username):
+                        self.id = uid
+                        self.first_name = username
+
+                return FakeUser(uid, username)
+
+            else:
+                class FakeUser:
+                    def __init__(self, username):
+                        self.id = f"@{username}"
+                        self.first_name = username
+
+                return FakeUser(username)
 
     return None
 
@@ -77,11 +109,26 @@ async def hakai(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     target = await get_target(update, context)
 
+    uid = str(target.id)
+
+    if uid in HAKAI_BANS or (isinstance(target.id, str) and target.id in HAKAI_BANS):
+        existing = HAKAI_BANS.get(uid) or HAKAI_BANS.get(target.id)
+
+        reason_old = (
+            existing.get("reason")
+            if isinstance(existing, dict)
+            else existing
+        )
+
+        await update.message.reply_text(
+            f"⚠️ User already hakaid.\nReason: {reason_old}"
+        )
+        return
+
     if not target:
         await update.message.reply_text("User not found.")
         return
 
-    # GET REASON
     reason = " ".join(context.args[1:]) if not update.message.reply_to_message else " ".join(context.args)
 
     if not reason:
@@ -91,7 +138,6 @@ async def hakai(update: Update, context: ContextTypes.DEFAULT_TYPE):
     banned = 0
 
     for gid in GROUPS:
-
         try:
             member = await context.bot.get_chat_member(gid, context.bot.id)
 
@@ -102,22 +148,49 @@ async def hakai(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except:
             pass
 
-    # SAVE GLOBAL BAN
-    HAKAI_BANS[str(target.id)] = reason
+    uid = str(target.id)
+
+    HAKAI_BANS[uid] = {
+        "name": target.first_name,
+        "reason": reason
+    }
+
+    if isinstance(target.id, str) and target.id.startswith("@"):
+        HAKAI_BANS[target.id] = {
+            "name": target.first_name,
+            "reason": reason
+        }
+
     save_hakai()
 
+    # FIXED BLOCK
+    if isinstance(target.id, int):
+        if target.first_name.startswith("@"):
+            user_mention = mention_html(target.id, target.first_name)
+        else:
+            user_mention = mention_html(target.id, f"@{target.first_name}")
+    else:
+        user_mention = target.first_name
+
+    admin_mention = mention_html(update.effective_user.id, update.effective_user.first_name)
+
     await update.message.reply_text(
-        f"☠ Hakai executed\n"
-        f"User: {target.first_name}\n"
-        f"Reason: {reason}\n"
-        f"Banned in {banned} groups."
+        f"☠ <b>Hakai Executed</b>\n"
+        f"👤 User: {user_mention}\n"
+        f"🛡 Admin: {admin_mention}\n"
+        f"📌 Reason: {reason}\n"
+        f"🚫 Banned in {banned} groups.",
+        parse_mode="HTML"
     )
 
     await send_log(
-    context,
-    update.effective_chat.id,
-    f"☠ Hakai executed\nUser: {target.first_name}\nAdmin: {update.effective_user.first_name}\nReason: {reason}"
-)
+        context,
+        update.effective_chat.id,
+        f"☠ <b>Hakai Executed</b>\n"
+        f"👤 User: {user_mention}\n"
+        f"🛡 Admin: {admin_mention}\n"
+        f"📌 Reason: {reason}"
+    )
 
 
 # GLOBAL UNBAN
@@ -143,26 +216,34 @@ async def unhakai(update: Update, context: ContextTypes.DEFAULT_TYPE):
             bot_member = await context.bot.get_chat_member(gid, context.bot.id)
 
             if bot_member.status in ["administrator", "creator"] and bot_member.can_restrict_members:
-
                 await context.bot.unban_chat_member(gid, target.id)
                 unbanned += 1
 
         except:
             pass
 
-    if str(target.id) in HAKAI_BANS:
-        del HAKAI_BANS[str(target.id)]
-        save_hakai()
+    uid = str(target.id)
+
+    if uid in HAKAI_BANS:
+        del HAKAI_BANS[uid]
+
+    if isinstance(target.id, str) and target.id.startswith("@"):
+        if target.id in HAKAI_BANS:
+            del HAKAI_BANS[target.id]
+
+    save_hakai()
 
     await update.message.reply_text(
         f"🌌 Hakai reversed\nUser unbanned in {unbanned} groups."
     )
 
     await send_log(
-    context,
-    update.effective_chat.id,
-    f"🌌 Hakai reversed\nUser: {target.first_name}\nAdmin: {update.effective_user.first_name}"
-)
+        context,
+        update.effective_chat.id,
+        f"🌌 <b>Hakai Reversed</b>\n"
+        f"👤 User: {target.first_name}\n"
+        f"🛡 Admin: {update.effective_user.first_name}"
+    )
 
 
 # HAKAI LIST
@@ -174,8 +255,15 @@ async def hakai_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     text = "☠ Globally Banned Users\n\n"
 
-    for uid, reason in HAKAI_BANS.items():
-        text += f"{uid} — {reason}\n"
+    for uid, data in HAKAI_BANS.items():
+        if isinstance(data, dict):
+            name = data.get("name", uid)
+            reason = data.get("reason", "No reason")
+        else:
+            name = uid
+            reason = data
+
+        text += f"• {name} ({uid})\n  └ {reason}\n\n"
 
     await update.message.reply_text(text)
 
@@ -202,12 +290,12 @@ async def ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.ban_chat_member(update.effective_chat.id, target.id)
 
         await update.message.reply_text(
-        f"{target.first_name} banned."
+            f"{target.first_name} banned."
         )
 
     except Exception:
         await update.message.reply_text(
-        "I cannot ban this user (maybe they are admin)."
+            "I cannot ban this user (maybe they are admin)."
         )
 
 
@@ -275,7 +363,7 @@ async def auto_hakai_join(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     for user in update.message.new_chat_members:
 
-        if str(user.id) in HAKAI_BANS:
+        if str(user.id) in HAKAI_BANS or f"@{user.username}" in HAKAI_BANS:
 
             try:
                 await context.bot.ban_chat_member(
@@ -291,7 +379,7 @@ async def auto_hakai_message(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     user = update.effective_user
 
-    if str(user.id) in HAKAI_BANS:
+    if str(user.id) in HAKAI_BANS or f"@{user.username}" in HAKAI_BANS:
 
         try:
             await context.bot.ban_chat_member(
@@ -302,11 +390,23 @@ async def auto_hakai_message(update: Update, context: ContextTypes.DEFAULT_TYPE)
             pass
 
 
+async def cache_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+
+    if not user:
+        return
+
+    if user.username:
+        USER_DB[user.username.lower()] = user.id
+        save_users()
+
+
 def register_hakai(app):
 
     app.add_handler(CommandHandler("hakai", hakai), group=0)
     app.add_handler(CommandHandler("unhakai", unhakai), group=0)
     app.add_handler(CommandHandler("hakai_list", hakai_list), group=0)
+    app.add_handler(MessageHandler(filters.ALL, cache_user), group=1)
 
     app.add_handler(CommandHandler("ban", ban), group=0)
     app.add_handler(CommandHandler("unban", unban), group=0)

@@ -2,14 +2,21 @@ import json
 import os
 import random
 
-from telegram import Update
-from telegram.ext import CommandHandler, ContextTypes, MessageHandler, filters
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.helpers import mention_html
+from telegram.ext import (
+    CommandHandler,
+    ContextTypes,
+    MessageHandler,
+    filters,
+    ChatMemberHandler,
+)
 
 from modules.moderation import is_admin
 
-
 GREET_FILE = "data/greetings.json"
 
+# LOAD DB
 if os.path.exists(GREET_FILE):
     with open(GREET_FILE, "r") as f:
         GREET_DB = json.load(f)
@@ -22,148 +29,229 @@ def save_greetings():
         json.dump(GREET_DB, f, indent=4)
 
 
-DEFAULT_WELCOME = [
-    "Hey {fullname}, welcome to {chatname}!",
-    "Welcome {fullname}! Glad you joined {chatname}.",
-    "Hello {fullname}! Enjoy your stay in {chatname}.",
-]
+# ---------------- COMMANDS ---------------- #
 
-DEFAULT_BYE = [
-    "Goodbye {fullname}, see you again!",
-    "{fullname} left the chat.",
-    "Sad to see you leave, {fullname}.",
-]
-
-
-# SET WELCOME
 async def setwelcome(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
     if not await is_admin(update, context):
-        await update.message.reply_text("Only admins can set welcome message.")
-        return
+        return await update.message.reply_text("Admins only.")
 
-    text = " ".join(context.args)
+    chat_id = str(update.effective_chat.id)
+    GREET_DB.setdefault(chat_id, {})
 
-    if not text:
-        await update.message.reply_text("Usage:\n/setwelcome <message>")
+    msg = update.message
+
+    # ---------------- CASE 1: REPLY ----------------
+    if msg.reply_to_message:
+        target = msg.reply_to_message
+
+        if target.photo:
+            GREET_DB[chat_id]["welcome"] = "media"
+            GREET_DB[chat_id]["media_type"] = "photo"
+            GREET_DB[chat_id]["file_id"] = target.photo[-1].file_id
+
+        elif target.animation:
+            GREET_DB[chat_id]["welcome"] = "media"
+            GREET_DB[chat_id]["media_type"] = "gif"
+            GREET_DB[chat_id]["file_id"] = target.animation.file_id
+
+        else:
+            return await msg.reply_text("Reply to photo or gif.")
+
+        # ✅ MULTILINE SUPPORT
+        if len(msg.text.split(None, 1)) > 1:
+            GREET_DB[chat_id]["text"] = msg.text.split(None, 1)[1]
+        else:
+            GREET_DB[chat_id]["text"] = ""
+
+    # ---------------- CASE 2: DIRECT PHOTO/GIF ----------------
+    elif msg.photo or msg.animation:
+
+        GREET_DB[chat_id]["welcome"] = "media"
+
+        if msg.photo:
+            GREET_DB[chat_id]["media_type"] = "photo"
+            GREET_DB[chat_id]["file_id"] = msg.photo[-1].file_id
+
+        elif msg.animation:
+            GREET_DB[chat_id]["media_type"] = "gif"
+            GREET_DB[chat_id]["file_id"] = msg.animation.file_id
+
+        caption = msg.caption or ""
+
+        # remove "/setwelcome" from caption
+        if caption.startswith("/setwelcome"):
+            parts = caption.split(None, 1)
+            caption = parts[1] if len(parts) > 1 else ""
+
+        GREET_DB[chat_id]["text"] = caption.strip()
+
+    # ---------------- CASE 3: TEXT ONLY ----------------
+    else:
+        if len(msg.text.split(None, 1)) < 2:
+            return await msg.reply_text("Usage:\n/setwelcome <text>")
+
+        text = msg.text.split(None, 1)[1]
+
+        GREET_DB[chat_id]["welcome"] = text
+
+    save_greetings()
+    await msg.reply_text("✅ Welcome message saved!")
+
+
+async def setrules(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await is_admin(update, context):
         return
 
     chat_id = str(update.effective_chat.id)
+    text = " ".join(context.args)
+
+    if not text:
+        return await update.message.reply_text("Usage: /setrules <rules text>")
 
     GREET_DB.setdefault(chat_id, {})
-    GREET_DB[chat_id]["welcome"] = text
-
+    GREET_DB[chat_id]["rules"] = text
     save_greetings()
 
-    await update.message.reply_text("Custom welcome message set.")
+    await update.message.reply_text("✅ Rules set!")
 
+
+# ---------------- MAIN ---------------- #
+async def member_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    result = update.chat_member
+    chat = update.effective_chat
+    chat_id = str(chat.id)
+
+    old = result.old_chat_member
+    new = result.new_chat_member
+    user = new.user
+
+    user_mention = mention_html(user.id, user.full_name)
+
+    if chat.username:
+        chat_link = f"<a href='https://t.me/{chat.username}'>{chat.title}</a>"
+    else:
+        chat_link = chat.title
+
+    # JOIN
+    if new.status in ["member", "administrator"] and old.status in ["left", "kicked"]:
+
+        data = GREET_DB.get(chat_id, {})
+
+        # RULE BUTTON
+        keyboard = None
+        if "rules" in data:
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("📜 Rules", callback_data="show_rules")]
+            ])
+
+        # MEDIA WELCOME
+        if data.get("welcome") == "media":
+
+            caption = data.get("text", "").format(
+                user=user_mention,
+                chat=chat_link
+            )
+
+            if data["media_type"] == "photo":
+                msg = await chat.send_photo(
+                    data["file_id"],
+                    caption=caption,
+                    parse_mode="HTML",
+                    reply_markup=keyboard
+                )
+
+            elif data["media_type"] == "gif":
+                msg = await chat.send_animation(
+                    data["file_id"],
+                    caption=caption,
+                    parse_mode="HTML",
+                    reply_markup=keyboard
+                )
+
+        else:
+            template = data.get(
+                "welcome",
+                "✨ <b>Welcome</b> {user}!\n\n📌 {chat}"
+            )
+
+            text = template.format(user=user_mention, chat=chat_link)
+
+            msg = await chat.send_message(
+                text,
+                parse_mode="HTML",
+                reply_markup=keyboard
+            )
+
+        context.application.create_task(auto_delete(msg))
+
+    # LEAVE
+    elif old.status in ["member", "administrator", "creator"] and new.status in ["left", "kicked"]:
+
+        data = GREET_DB.get(chat_id, {})
+
+        template = data.get(
+            "bye",
+            "👋 {user} left the chat."
+        )
+
+        text = template.format(user=user_mention, chat=chat_link)
+
+        msg = await chat.send_message(text, parse_mode="HTML")
+
+        context.application.create_task(auto_delete(msg))
+
+
+# RULE BUTTON CLICK
+async def rules_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    chat_id = str(update.effective_chat.id)
+
+    rules = GREET_DB.get(chat_id, {}).get("rules", "No rules set.")
+
+    await query.answer()
+    await query.message.reply_text(rules)
+
+
+# CLEAN SERVICE
+async def clean_service(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = update.effective_message
+    if msg and (msg.new_chat_members or msg.left_chat_member):
+        try:
+            await msg.delete()
+        except:
+            pass
 
 # SET BYE
 async def setbye(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
     if not await is_admin(update, context):
-        await update.message.reply_text("Only admins can set goodbye message.")
-        return
-
-    text = " ".join(context.args)
-
-    if not text:
-        await update.message.reply_text("Usage:\n/setbye <message>")
-        return
+        return await update.message.reply_text("Admins only.")
 
     chat_id = str(update.effective_chat.id)
-
     GREET_DB.setdefault(chat_id, {})
+
+    msg = update.message
+
+    # ✅ MULTILINE SUPPORT
+    if len(msg.text.split(None, 1)) < 2:
+        return await msg.reply_text("Usage:\n/setbye <message>")
+
+    text = msg.text.split(None, 1)[1]
+
     GREET_DB[chat_id]["bye"] = text
-
     save_greetings()
 
-    await update.message.reply_text("Custom goodbye message set.")
+    await msg.reply_text("✅ Goodbye message set!")
 
-
-# RESET COMMANDS
-async def resetwelcome(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    if not await is_admin(update, context):
-        return
-
-    chat_id = str(update.effective_chat.id)
-
-    if chat_id in GREET_DB and "welcome" in GREET_DB[chat_id]:
-        del GREET_DB[chat_id]["welcome"]
-
-    save_greetings()
-
-    await update.message.reply_text("Welcome message reset to default.")
-
-
-async def resetbye(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    if not await is_admin(update, context):
-        return
-
-    chat_id = str(update.effective_chat.id)
-
-    if chat_id in GREET_DB and "bye" in GREET_DB[chat_id]:
-        del GREET_DB[chat_id]["bye"]
-
-    save_greetings()
-
-    await update.message.reply_text("Goodbye message reset to default.")
-
-
-# NEW MEMBER
-async def welcome_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    chat = update.effective_chat
-    chat_id = str(chat.id)
-
-    for user in update.message.new_chat_members:
-
-        if chat_id in GREET_DB and "welcome" in GREET_DB[chat_id]:
-            template = GREET_DB[chat_id]["welcome"]
-        else:
-            template = random.choice(DEFAULT_WELCOME)
-
-        text = template.format(
-            fullname=user.full_name,
-            username=f"@{user.username}" if user.username else "None",
-            id=user.id,
-            chatname=chat.title
-        )
-
-        await update.message.reply_text(text)
-
-
-# LEFT MEMBER
-async def goodbye_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    chat = update.effective_chat
-    chat_id = str(chat.id)
-
-    user = update.message.left_chat_member
-
-    if chat_id in GREET_DB and "bye" in GREET_DB[chat_id]:
-        template = GREET_DB[chat_id]["bye"]
-    else:
-        template = random.choice(DEFAULT_BYE)
-
-    text = template.format(
-        fullname=user.full_name,
-        username=f"@{user.username}" if user.username else "None",
-        id=user.id,
-        chatname=chat.title
-    )
-
-    await update.message.reply_text(text)
-
-
+# REGISTER
 def register_greetings(app):
 
     app.add_handler(CommandHandler("setwelcome", setwelcome))
     app.add_handler(CommandHandler("setbye", setbye))
-    app.add_handler(CommandHandler("resetwelcome", resetwelcome))
-    app.add_handler(CommandHandler("resetbye", resetbye))
+    app.add_handler(CommandHandler("setrules", setrules))
 
-    app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, welcome_member))
-    app.add_handler(MessageHandler(filters.StatusUpdate.LEFT_CHAT_MEMBER, goodbye_member))
+    app.add_handler(ChatMemberHandler(member_update, ChatMemberHandler.CHAT_MEMBER))
+
+    app.add_handler(MessageHandler(filters.ALL, clean_service), group=-1)
+
+    from telegram.ext import CallbackQueryHandler
+    app.add_handler(CallbackQueryHandler(rules_callback, pattern="show_rules"))

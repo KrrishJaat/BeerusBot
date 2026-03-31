@@ -36,8 +36,12 @@ def main_text():
         "Choose a category below."
     )
 
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        main_text(),
+        reply_markup=main_keyboard()
+    )
 
-# START COMMAND
 # START COMMAND
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
@@ -266,6 +270,7 @@ After 3 warns the user will be automatically banned.
 def register_start(app):
 
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("help", help_command))
 
     # BACK must be registered before help_
     app.add_handler(CallbackQueryHandler(help_back, pattern="^help_back$"))
