@@ -13,6 +13,17 @@ from modules.adminlogs import send_log
 from config import OWNER_ID
 
 RULES_FILE = "data/rules.json"
+TPIN_FILE = "data/temp_pins.json"
+
+if os.path.exists(TPIN_FILE):
+    with open(TPIN_FILE) as f:
+        TEMP_PINS = json.load(f)
+else:
+    TEMP_PINS = {}
+
+def save_temp_pins():
+    with open(TPIN_FILE, "w") as f:
+        json.dump(TEMP_PINS, f, indent=4)
 
 if os.path.exists(RULES_FILE):
     with open(RULES_FILE, "r") as f:
@@ -39,6 +50,25 @@ def save_admin_ranks():
     with open(ADMIN_RANK_FILE, "w") as f:
         json.dump(ADMIN_RANKS, f)
 
+def parse_time(text):
+    text = text.lower()
+
+    if text.endswith("min"):
+        return int(text[:-3]) * 60
+    if text.endswith("m"):
+        return int(text[:-1]) * 60
+    if text.endswith("h"):
+        return int(text[:-1]) * 3600
+    if text.endswith("d"):
+        return int(text[:-1]) * 86400
+    if text.endswith("w"):
+        return int(text[:-1]) * 604800
+    if text.endswith("mon"):
+        return int(text[:-3]) * 2592000
+    if text.endswith("y"):
+        return int(text[:-1]) * 31536000
+
+    return None
 
 # Ensure bot owner exists
 if str(OWNER_ID) not in ADMIN_RANKS:
@@ -125,6 +155,91 @@ async def ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="HTML"
     )
 
+#PIN
+async def pin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    if not await allow_in_dm(update):
+        return
+
+    rank = ADMIN_RANKS.get(str(update.effective_user.id))
+    chat_id = update.effective_chat.id
+
+    member = await context.bot.get_chat_member(chat_id, update.effective_user.id)
+
+    if rank not in ["owner","dev","sudo","support"] and member.status not in ["administrator","creator"]:
+        await update.message.reply_text("You're not authorized.")
+        return
+
+    if not update.message.reply_to_message:
+        await update.message.reply_text("Reply to a message to pin.")
+        return
+
+    message_id = update.message.reply_to_message.message_id
+
+    silent = True
+    if context.args and context.args[0].lower() == "loud":
+        silent = False
+
+    await context.bot.pin_chat_message(
+        chat_id,
+        message_id,
+        disable_notification=silent
+    )
+
+#TPIN (Temporary Pin)
+async def tpin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    if not await allow_in_dm(update):
+        return
+
+    if not update.message.reply_to_message:
+        await update.message.reply_text("Reply to message.")
+        return
+
+    if not context.args:
+        await update.message.reply_text("Usage: /tpin <time>")
+        return
+
+    seconds = parse_time(context.args[0])
+
+    if not seconds:
+        await update.message.reply_text("Invalid time format.")
+        return
+
+    chat_id = update.effective_chat.id
+    message_id = update.message.reply_to_message.message_id
+
+    await context.bot.pin_chat_message(chat_id, message_id)
+
+    import time
+    unpin_time = int(time.time()) + seconds
+
+    TEMP_PINS.setdefault(str(chat_id), {})
+    TEMP_PINS[str(chat_id)][str(message_id)] = unpin_time
+    save_temp_pins()
+
+    await update.message.reply_text(f"Pinned for {context.args[0]}.")
+
+async def check_temp_pins(context: ContextTypes.DEFAULT_TYPE):
+
+    import time
+    now = int(time.time())
+
+    for chat_id in list(TEMP_PINS.keys()):
+        for msg_id, until in list(TEMP_PINS[chat_id].items()):
+
+            if now >= until:
+                try:
+                    await context.bot.unpin_chat_message(
+                        int(chat_id),
+                        int(msg_id)
+                    )
+                except:
+                    pass
+
+                del TEMP_PINS[chat_id][msg_id]
+
+    save_temp_pins()
 
 # CHAT LOCK
 async def lock_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -671,3 +786,6 @@ def register_moderation(app):
     app.add_handler(CommandHandler("rules", rules))
     app.add_handler(CommandHandler("setrules", setrules))
     app.add_handler(CommandHandler("ranks", ranks), group=0)
+    app.add_handler(CommandHandler("pin", pin), group=0)
+    app.add_handler(CommandHandler("tpin", tpin), group=0)
+    app.job_queue.run_repeating(check_temp_pins, interval=30)

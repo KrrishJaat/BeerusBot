@@ -1,6 +1,6 @@
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import CommandHandler, ContextTypes, CallbackQueryHandler
-
+from telegram.helpers import mention_html
 from modules.moderation import is_admin, ADMIN_RANKS, RANK_LEVEL
 from utils import load_json, save_json
 from modules.adminlogs import send_log
@@ -9,6 +9,26 @@ from modules.adminlogs import send_log
 warn_file = "data/warns.json"
 warns_db = load_json(warn_file)
 
+PAGE_SIZE = 15
+
+
+def paginate(items, page):
+    total = len(items)
+    start = page * PAGE_SIZE
+    end = start + PAGE_SIZE
+    return items[start:end], total
+
+
+def build_buttons(prefix, page, total):
+    buttons = []
+
+    if page > 0:
+        buttons.append(InlineKeyboardButton("⬅ Prev", callback_data=f"{prefix}_{page-1}"))
+
+    if (page + 1) * PAGE_SIZE < total:
+        buttons.append(InlineKeyboardButton("Next ➡", callback_data=f"{prefix}_{page+1}"))
+
+    return InlineKeyboardMarkup([buttons]) if buttons else None
 
 def actor_rank(user_id):
     data = ADMIN_RANKS.get(str(user_id))
@@ -397,6 +417,55 @@ async def warns(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("No warns.")
 
+#WARN LIST
+async def warnlist(update, context):
+    chat_id = str(update.effective_chat.id)
+
+    if chat_id not in warns_db or not warns_db[chat_id]:
+        await update.message.reply_text("No active warns.")
+        return
+
+    items = list(warns_db[chat_id].items())
+    await render_warn_page(update, context, items, 0)
+
+
+async def render_warn_page(update, context, items, page):
+
+    page_items, total = paginate(items, page)
+    total_pages = (total - 1) // PAGE_SIZE + 1
+
+    text = f"⚠ <b>Warn Panel</b>\n📄 Page {page+1}/{total_pages}\n\n"
+
+    for user_id, data in page_items:
+
+        try:
+            member = await context.bot.get_chat_member(update.effective_chat.id, int(user_id))
+            user = member.user
+            name = f"@{user.username}" if user.username else user.first_name
+            mention = mention_html(user.id, name)
+        except:
+            mention = f"<code>{user_id}</code>"
+
+        count = data.get("count", 0)
+        text += f"👤 {mention} — ⚠ {count}/3\n"
+
+    keyboard = build_buttons("warn", page, total)
+
+    if update.callback_query:
+        await update.callback_query.edit_message_text(text, parse_mode="HTML", reply_markup=keyboard)
+    else:
+        await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard)
+
+
+async def warn_callback(update, context):
+    query = update.callback_query
+    await query.answer()
+
+    page = int(query.data.split("_")[1])
+    chat_id = str(query.message.chat.id)
+
+    items = list(warns_db.get(chat_id, {}).items())
+    await render_warn_page(update, context, items, page)
 
 # REGISTER HANDLERS
 def register_warns(app):
@@ -406,7 +475,10 @@ def register_warns(app):
     app.add_handler(CommandHandler("unwarn", unwarn), group=0)
     app.add_handler(CommandHandler("resetwarn", resetwarn), group=0)
     app.add_handler(CommandHandler("warns", warns), group=0)
+    app.add_handler(CommandHandler("warnlist", warnlist))
 
     app.add_handler(
         CallbackQueryHandler(unwarn_button, pattern="^unwarn_")
     )
+
+    app.add_handler(CallbackQueryHandler(warn_callback, pattern=r"^warn_"))

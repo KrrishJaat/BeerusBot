@@ -2,7 +2,9 @@ import json
 import os
 
 from telegram import Update
+from telegram import InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.helpers import mention_html
+from telegram.ext import CallbackQueryHandler
 from telegram.ext import CommandHandler, ContextTypes, MessageHandler, filters
 from modules.filters import allow_in_dm
 from modules.adminlogs import send_log
@@ -11,15 +13,58 @@ from config import OWNER_ID
 from modules.moderation import ADMIN_RANKS
 from modules.groups import GROUPS
 
+PAGE_SIZE = 15
+
+
+def paginate(items, page):
+    total = len(items)
+    start = page * PAGE_SIZE
+    end = start + PAGE_SIZE
+    return items[start:end], total
+
+
+def build_buttons(prefix, page, total):
+    buttons = []
+
+    if page > 0:
+        buttons.append(InlineKeyboardButton("⬅ Prev", callback_data=f"{prefix}_{page-1}"))
+
+    if (page + 1) * PAGE_SIZE < total:
+        buttons.append(InlineKeyboardButton("Next ➡", callback_data=f"{prefix}_{page+1}"))
+
+    return InlineKeyboardMarkup([buttons]) if buttons else None
 
 HAKAI_FILE = "data/hakai_bans.json"
 USER_FILE = "data/user_cache.json"
+BAN_FILE = "data/local_bans.json"
+
+if os.path.exists(BAN_FILE):
+    with open(BAN_FILE) as f:
+        LOCAL_BANS = json.load(f)
+else:
+    LOCAL_BANS = {}
+
+def save_local_bans():
+    with open(BAN_FILE, "w") as f:
+        json.dump(LOCAL_BANS, f, indent=4)
 
 if os.path.exists(USER_FILE):
     with open(USER_FILE) as f:
         USER_DB = json.load(f)
 else:
     USER_DB = {}
+
+TBAN_FILE = "data/temp_bans.json"
+
+if os.path.exists(TBAN_FILE):
+    with open(TBAN_FILE) as f:
+        TEMP_BANS = json.load(f)
+else:
+    TEMP_BANS = {}
+
+def save_temp_bans():
+    with open(TBAN_FILE, "w") as f:
+        json.dump(TEMP_BANS, f, indent=4)
 
 # LOAD DATA
 if os.path.exists(HAKAI_FILE):
@@ -45,6 +90,25 @@ def save_users():
     with open(USER_FILE, "w") as f:
         json.dump(USER_DB, f, indent=4)
 
+def parse_time(text):
+    text = text.lower()
+
+    if text.endswith("min"):
+        return int(text[:-3]) * 60
+    if text.endswith("m"):
+        return int(text[:-1]) * 60
+    if text.endswith("h"):
+        return int(text[:-1]) * 3600
+    if text.endswith("d"):
+        return int(text[:-1]) * 86400
+    if text.endswith("w"):
+        return int(text[:-1]) * 604800
+    if text.endswith("mon"):
+        return int(text[:-3]) * 2592000
+    if text.endswith("y"):
+        return int(text[:-1]) * 31536000
+
+    return None
 
 async def get_target(update, context):
 
@@ -302,25 +366,100 @@ async def unhakai(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # HAKAI LIST
-async def hakai_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def hakai_list(update, context):
 
     if not HAKAI_BANS:
-        await update.message.reply_text("No globally banned users.")
+        await update.message.reply_text("No global bans.")
         return
 
-    text = "☠ Globally Banned Users\n\n"
+    items = list(HAKAI_BANS.items())
+    await render_hakai_page(update, context, items, 0)
 
-    for uid, data in HAKAI_BANS.items():
-        if isinstance(data, dict):
-            name = data.get("name", uid)
-            reason = data.get("reason", "No reason")
-        else:
-            name = uid
-            reason = data
 
-        text += f"• {name} ({uid})\n  └ {reason}\n\n"
+async def render_hakai_page(update, context, items, page):
 
-    await update.message.reply_text(text)
+    page_items, total = paginate(items, page)
+    total_pages = (total - 1) // PAGE_SIZE + 1
+
+    text = f"☠ <b>Hakai Panel</b>\n📄 Page {page+1}/{total_pages}\n\n"
+
+    for uid, data in page_items:
+
+        reason = data.get("reason", "No reason") if isinstance(data, dict) else data
+
+        try:
+            member = await context.bot.get_chat_member(update.effective_chat.id, int(uid))
+            user = member.user
+            name = f"@{user.username}" if user.username else user.first_name
+            mention = mention_html(user.id, name)
+        except:
+            mention = f"<code>{uid}</code>"
+
+        text += f"👤 {mention}\n🚫 {reason}\n\n"
+
+    keyboard = build_buttons("hakai", page, total)
+
+    if update.callback_query:
+        await update.callback_query.edit_message_text(text, parse_mode="HTML", reply_markup=keyboard)
+    else:
+        await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard)
+
+
+async def hakai_callback(update, context):
+    query = update.callback_query
+    await query.answer()
+
+    page = int(query.data.split("_")[1])
+
+    items = list(HAKAI_BANS.items())
+    await render_hakai_page(update, context, items, page)
+async def hakai_list(update, context):
+
+    if not HAKAI_BANS:
+        await update.message.reply_text("No global bans.")
+        return
+
+    items = list(HAKAI_BANS.items())
+    await render_hakai_page(update, context, items, 0)
+
+
+async def render_hakai_page(update, context, items, page):
+
+    page_items, total = paginate(items, page)
+    total_pages = (total - 1) // PAGE_SIZE + 1
+
+    text = f"☠ <b>Hakai Panel</b>\n📄 Page {page+1}/{total_pages}\n\n"
+
+    for uid, data in page_items:
+
+        reason = data.get("reason", "No reason") if isinstance(data, dict) else data
+
+        try:
+            member = await context.bot.get_chat_member(update.effective_chat.id, int(uid))
+            user = member.user
+            name = f"@{user.username}" if user.username else user.first_name
+            mention = mention_html(user.id, name)
+        except:
+            mention = f"<code>{uid}</code>"
+
+        text += f"👤 {mention}\n🚫 {reason}\n\n"
+
+    keyboard = build_buttons("hakai", page, total)
+
+    if update.callback_query:
+        await update.callback_query.edit_message_text(text, parse_mode="HTML", reply_markup=keyboard)
+    else:
+        await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard)
+
+
+async def hakai_callback(update, context):
+    query = update.callback_query
+    await query.answer()
+
+    page = int(query.data.split("_")[1])
+
+    items = list(HAKAI_BANS.items())
+    await render_hakai_page(update, context, items, page)
 
 
 # LOCAL BAN
@@ -366,10 +505,25 @@ async def ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         await context.bot.ban_chat_member(chat_id, target.id)
-        await update.message.reply_text(f"{target.first_name} banned.")
-    except Exception:
-        await update.message.reply_text("I cannot ban this user (maybe they are admin).")
 
+        # ✅ STORE BAN
+        chat_str = str(chat_id)
+        user_str = str(target.id)
+
+        LOCAL_BANS.setdefault(chat_str, {})
+        LOCAL_BANS[chat_str][user_str] = {
+            "name": target.first_name,
+            "admin": update.effective_user.first_name,
+            "reason": "No reason"
+        }
+
+        save_local_bans()
+
+        await update.message.reply_text(f"{target.first_name} banned.")
+
+    except Exception as e:
+        print(e)
+        await update.message.reply_text("I cannot ban this user (maybe admin).")
 
 # LOCAL UNBAN
 async def unban(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -395,6 +549,12 @@ async def unban(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     await context.bot.unban_chat_member(chat_id, target.id)
+    chat_str = str(chat_id)
+    user_str = str(target.id)
+
+    if chat_str in LOCAL_BANS and user_str in LOCAL_BANS[chat_str]:
+        del LOCAL_BANS[chat_str][user_str]
+        save_local_bans()
     await update.message.reply_text(f"{target.first_name} unbanned.")
 
 
@@ -468,15 +628,214 @@ async def dban(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         await context.bot.ban_chat_member(chat_id, target.id)
-    except:
+
+        chat_str = str(chat_id)
+        user_str = str(target.id)
+
+        LOCAL_BANS.setdefault(chat_str, {})
+        LOCAL_BANS[chat_str][user_str] = {
+            "name": target.first_name,
+            "admin": update.effective_user.first_name,
+            "reason": "Deleted + Ban"
+        }
+
+        save_local_bans()
+
+    except Exception:
+        await update.message.reply_text("Cannot ban this user.")
+        return
         await update.message.reply_text("Cannot ban this user.")
         return
 
+    except:
+        await update.message.reply_text("Cannot ban this user.")
+        return
     await update.message.reply_text(f"{target.first_name} banned.")
 
+#BAN LIST
+async def banlist(update, context):
+
+    chat_id = str(update.effective_chat.id)
+
+    if chat_id not in LOCAL_BANS or not LOCAL_BANS[chat_id]:
+        await update.message.reply_text("No banned users.")
+        return
+
+    items = list(LOCAL_BANS[chat_id].items())
+    await render_ban_page(update, context, items, 0)
+
+async def render_ban_page(update, context, items, page):
+
+    page_items, total = paginate(items, page)
+    total_pages = (total - 1) // PAGE_SIZE + 1
+
+    text = f"🚫 <b>Ban Panel</b>\n📄 Page {page+1}/{total_pages}\n\n"
+
+    for user_id, data in page_items:
+
+        try:
+            member = await context.bot.get_chat_member(update.effective_chat.id, int(user_id))
+            user = member.user
+            name = f"@{user.username}" if user.username else user.first_name
+            mention = mention_html(user.id, name)
+        except:
+            mention = f"<code>{user_id}</code>"
+
+        admin = data.get("admin", "Unknown")
+        reason = data.get("reason", "No reason")
+
+        text += f"👤 {mention}\n"
+        text += f"🛡 By: {admin}\n"
+        text += f"📌 {reason}\n\n"
+
+    keyboard = build_buttons("ban", page, total)
+
+    if update.callback_query:
+        await update.callback_query.edit_message_text(text, parse_mode="HTML", reply_markup=keyboard)
+    else:
+        await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard)
+
+#TBAN (Temporary Ban)
+async def tban(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    rank = actor_rank(update.effective_user.id)
+
+    chat_id = update.effective_chat.id
+    member = await context.bot.get_chat_member(chat_id, update.effective_user.id)
+
+    if rank not in ["owner","dev","sudo","support"] and member.status not in ["administrator","creator"]:
+        await update.message.reply_text("You're not authorized.")
+        return
+
+    # reply method
+    if update.message.reply_to_message:
+        target = update.message.reply_to_message.from_user
+
+        if not context.args:
+            await update.message.reply_text("Usage: /tban <time>")
+            return
+
+        time_arg = context.args[0]
+        reason = " ".join(context.args[1:]) if len(context.args) > 1 else "No reason"
+
+    else:
+        if len(context.args) < 2:
+            await update.message.reply_text("Usage: /tban <user> <time>")
+            return
+
+        username = context.args[0].replace("@","")
+        time_arg = context.args[1]
+        reason = " ".join(context.args[2:]) if len(context.args) > 2 else "No reason"
+
+        try:
+            member = await context.bot.get_chat_member(chat_id, username)
+            target = member.user
+        except:
+            await update.message.reply_text("User not found.")
+            return
+
+    seconds = parse_time(time_arg)
+
+    if not seconds:
+        await update.message.reply_text("Invalid time.")
+        return
+
+    import time
+    unban_time = int(time.time()) + seconds
+
+    TEMP_BANS.setdefault(str(chat_id), {})
+    TEMP_BANS[str(chat_id)][str(target.id)] = unban_time
+    save_temp_bans()
+
+    await context.bot.ban_chat_member(chat_id, target.id)
+
+    await update.message.reply_text(
+        f"{target.first_name} banned for {time_arg}.\nReason: {reason}"
+    )
+
+async def check_temp_bans(context: ContextTypes.DEFAULT_TYPE):
+
+    import time
+    now = int(time.time())
+
+    for chat_id in list(TEMP_BANS.keys()):
+        for user_id, until in list(TEMP_BANS[chat_id].items()):
+
+            if now >= until:
+                try:
+                    await context.bot.unban_chat_member(
+                        int(chat_id),
+                        int(user_id)
+                    )
+                except:
+                    pass
+
+                del TEMP_BANS[chat_id][user_id]
+
+    save_temp_bans()
+
+#TBAN LIST
+async def tbanlist(update, context):
+
+    if not TEMP_BANS:
+        await update.message.reply_text("No active temp bans.")
+        return
+
+    items = []
+    for chat_id, users in TEMP_BANS.items():
+        for uid, until in users.items():
+            items.append((chat_id, uid, until))
+
+    await render_tban_page(update, context, items, 0)
+
+
+async def render_tban_page(update, context, items, page):
+
+    import time
+    now = int(time.time())
+
+    page_items, total = paginate(items, page)
+    total_pages = (total - 1) // PAGE_SIZE + 1
+
+    text = f"⏳ <b>Temp Ban Panel</b>\n📄 Page {page+1}/{total_pages}\n\n"
+
+    for chat_id, user_id, until in page_items:
+
+        remaining = max(0, (until - now) // 60)
+
+        try:
+            member = await context.bot.get_chat_member(int(chat_id), int(user_id))
+            user = member.user
+            name = f"@{user.username}" if user.username else user.first_name
+            mention = mention_html(user.id, name)
+        except:
+            mention = f"<code>{user_id}</code>"
+
+        text += f"👤 {mention} — ⏱ {remaining} min\n"
+
+    keyboard = build_buttons("tban", page, total)
+
+    if update.callback_query:
+        await update.callback_query.edit_message_text(text, parse_mode="HTML", reply_markup=keyboard)
+    else:
+        await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard)
+
+
+async def ban_callback(update, context):
+    query = update.callback_query
+    await query.answer()
+
+    page = int(query.data.split("_")[1])
+    chat_id = str(query.message.chat.id)
+
+    items = list(LOCAL_BANS.get(chat_id, {}).items())
+    await render_ban_page(update, context, items, page)
 
 # AUTO GLOBAL BAN ON JOIN
 async def auto_hakai_join(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    if not update.message:
+        return
 
     if not update.message.new_chat_members:
         return
@@ -490,24 +849,50 @@ async def auto_hakai_join(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     update.effective_chat.id,
                     user.id
                 )
-            except:
-                pass
+
+                # optional clean message
+                await update.message.reply_text(
+                    "🚫 User removed (globally banned)."
+                )
+
+            except Exception as e:
+                print("Join ban failed:", e)
 
 
 # AUTO GLOBAL BAN ON MESSAGE
 async def auto_hakai_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user = update.effective_user
+    chat_id = update.effective_chat.id
 
-    if str(user.id) in HAKAI_BANS or f"@{user.username}" in HAKAI_BANS:
+    if not user:
+        return
 
-        try:
-            await context.bot.ban_chat_member(
-                update.effective_chat.id,
-                user.id
-            )
-        except:
-            pass
+    if str(user.id) not in HAKAI_BANS and f"@{user.username}" not in HAKAI_BANS:
+        return
+
+    try:
+        member = await context.bot.get_chat_member(chat_id, user.id)
+
+        # avoid loop
+        if member.status in ["kicked", "restricted"]:
+            return
+
+    except:
+        return
+
+    try:
+        # delete message first (clean UX)
+        if update.message:
+            try:
+                await update.message.delete()
+            except:
+                pass
+
+        await context.bot.ban_chat_member(chat_id, user.id)
+
+    except Exception as e:
+        print("Message ban failed:", e)
 
 
 async def cache_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -526,18 +911,35 @@ def register_hakai(app):
     app.add_handler(CommandHandler("hakai", hakai), group=0)
     app.add_handler(CommandHandler("unhakai", unhakai), group=0)
     app.add_handler(CommandHandler("hakai_list", hakai_list), group=0)
+    app.job_queue.run_repeating(check_temp_bans, interval=30)
     app.add_handler(MessageHandler(filters.ALL, cache_user), group=1)
 
     app.add_handler(CommandHandler("ban", ban), group=0)
     app.add_handler(CommandHandler("unban", unban), group=0)
     app.add_handler(CommandHandler("dban", dban), group=0)
+    app.add_handler(CommandHandler("tbanlist", tbanlist))
+    app.add_handler(CommandHandler("hakai_list", hakai_list))
+    app.add_handler(CommandHandler("banlist", banlist), group=0)
 
     app.add_handler(
         MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, auto_hakai_join),
         group=0
     )
 
-    app.add_handler(
-        MessageHandler(filters.ALL & (~filters.COMMAND), auto_hakai_message),
-        group=0
-    )
+    app.add_handler(MessageHandler(filters.ALL, auto_hakai_message), group=0)
+    app.add_handler(CallbackQueryHandler(tban_callback, pattern=r"^tban_"))
+    app.add_handler(CallbackQueryHandler(hakai_callback, pattern=r"^hakai_"))
+    app.add_handler(CallbackQueryHandler(ban_callback, pattern=r"^ban_"))
+
+
+async def tban_callback(update, context):
+    query = update.callback_query
+    await query.answer()
+    page = int(query.data.split("_")[1])
+
+    items = []
+    for chat_id, users in TEMP_BANS.items():
+        for uid, until in users.items():
+            items.append((chat_id, uid, until))
+
+    await render_tban_page(update, context, items, page)
